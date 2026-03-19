@@ -1,0 +1,404 @@
+/* src/components/SketchVoiceAssistant.css */
+
+/* ─── FAB Button ─── */
+.sketch-fab {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #22d3ee 0%, #06b6d4 100%);
+  color: #0a0f1c;
+  cursor: pointer;
+  box-shadow: 0 4px 24px rgba(34,211,238,0.3), 0 0 0 0 rgba(34,211,238,0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9998;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: sketch-fab-pulse 3s ease-in-out infinite;
+}
+
+.sketch-fab:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 32px rgba(34,211,238,0.45), 0 0 0 10px rgba(34,211,238,0.08);
+}
+
+.sketch-fab:active { transform: scale(0.95); }
+
+.sketch-fab.has-alerts::after {
+  content: attr(data-alerts);
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #f43f5e;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #0a0f1c;
+}
+
+@keyframes sketch-fab-pulse {
+  0%, 100% { box-shadow: 0 4px 24px rgba(34,211,238,0.3), 0 0 0 0 rgba(34,211,238,0.2); }
+  50%       { box-shadow: 0 4px 24px rgba(34,211,238,0.3), 0 0 0 12px rgba(34,211,238,0.05); }
+}
+
+/* ─── Robot SVG inside FAB ─── */
+.sketch-fab .robot-svg {
+  width: 34px;
+  height: 34px;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sketch-fab:hover .robot-svg {
+  transform: scale(1.1) rotate(-6deg);
+}
+
+/* Robot eye blink animation */
+.robot-eye {
+  animation: robot-blink 4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.robot-eye-right {
+  animation: robot-blink 4s ease-in-out infinite 0.1s;
+}
+
+@keyframes robot-blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  94%            { transform: scaleY(0.1); }
+}
+
+/* Robot mouth pulse when idle */
+.robot-mouth-seg {
+  animation: robot-mouth-idle 2.5s ease-in-out infinite;
+}
+
+@keyframes robot-mouth-idle {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 0.9; }
+}
+
+/* ─── Chat Panel ─── */
+.sketch-panel {
+  position: fixed;
+  bottom: 104px;
+  right: 28px;
+  width: 400px;
+  max-width: calc(100vw - 2rem);
+  height: 560px;
+  max-height: calc(100vh - 140px);
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 20px;
+  display: flex;
+  flex-direction: column;
+  z-index: 9999;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(34,211,238,0.05);
+  transform: scale(0.9) translateY(20px);
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.sketch-panel.open {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+  pointer-events: all;
+}
+
+/* ─── Header ─── */
+.sketch-header {
+  padding: 1rem 1.2rem;
+  background: linear-gradient(135deg, #1a2236 0%, #111827 100%);
+  border-bottom: 1px solid #1e293b;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Robot logo container en el header */
+.sketch-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #22d3ee 0%, #06b6d4 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(34,211,238,0.2);
+  transition: box-shadow 0.3s;
+}
+
+.sketch-logo:hover {
+  box-shadow: 0 0 0 4px rgba(34,211,238,0.15);
+}
+
+.sketch-logo .robot-svg-header {
+  width: 28px;
+  height: 28px;
+}
+
+/* Antena del robot en el header: parpadea cuando está escuchando */
+.sketch-panel.listening .robot-antenna-dot {
+  animation: antenna-ping 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes antenna-ping {
+  from { fill: #0a0f1c; }
+  to   { fill: #22d3ee; }
+}
+
+.sketch-header-info h3 {
+  font-family: 'Space Mono', 'Courier New', monospace;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #f1f5f9;
+  letter-spacing: 0.03em;
+  margin: 0;
+}
+
+.sketch-header-status {
+  font-size: 0.72rem;
+  color: #10b981;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sketch-header-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  display: inline-block;
+  animation: sketch-status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes sketch-status-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.sketch-close {
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.sketch-close:hover {
+  background: #1a2236;
+  color: #f1f5f9;
+}
+
+/* ─── Alerts Bar ─── */
+.sketch-alerts-bar {
+  padding: 0.5rem 1rem;
+  background: rgba(244, 63, 94, 0.08);
+  border-bottom: 1px solid rgba(244, 63, 94, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: #f43f5e;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.sketch-alerts-bar:hover {
+  background: rgba(244, 63, 94, 0.12);
+}
+
+/* ─── Messages ─── */
+.sketch-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  scrollbar-width: thin;
+  scrollbar-color: #1e293b transparent;
+}
+
+.sketch-msg {
+  max-width: 88%;
+  padding: 0.7rem 1rem;
+  border-radius: 16px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  animation: sketch-msg-in 0.3s ease-out;
+}
+
+@keyframes sketch-msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.sketch-msg.user {
+  align-self: flex-end;
+  background: #164e63;
+  color: #f1f5f9;
+  border-bottom-right-radius: 4px;
+}
+
+.sketch-msg.assistant {
+  align-self: flex-start;
+  background: #1a2236;
+  color: #f1f5f9;
+  border: 1px solid #1e293b;
+  border-bottom-left-radius: 4px;
+}
+
+/* Avatar robot miniatura junto a mensajes del assistant */
+.sketch-msg-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.sketch-msg-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #22d3ee 0%, #06b6d4 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.sketch-msg-time {
+  font-size: 0.65rem;
+  color: #94a3b8;
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
+.sketch-msg.user .sketch-msg-time { text-align: right; }
+
+/* ─── Live Transcript ─── */
+.sketch-live {
+  padding: 0.5rem 1rem;
+  background: rgba(34,211,238,0.05);
+  border-top: 1px solid #1e293b;
+  font-size: 0.8rem;
+  color: #22d3ee;
+  font-style: italic;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* ─── Controls ─── */
+.sketch-controls {
+  padding: 0.8rem 1rem;
+  background: #1a2236;
+  border-top: 1px solid #1e293b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sketch-controls-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.sketch-mic-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 2px solid #22d3ee;
+  background: transparent;
+  color: #22d3ee;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sketch-mic-btn:hover:not(:disabled) {
+  background: rgba(34,211,238,0.15);
+  transform: scale(1.05);
+}
+
+.sketch-mic-btn.listening {
+  background: #22d3ee;
+  color: #0a0f1c;
+  animation: sketch-mic-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes sketch-mic-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34,211,238,0.4); }
+  50%       { box-shadow: 0 0 0 16px rgba(34,211,238,0); }
+}
+
+.sketch-mic-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sketch-hint {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.sketch-wake-badge {
+  font-size: 0.65rem;
+  color: #22d3ee;
+  background: rgba(34,211,238,0.08);
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-family: 'Space Mono', monospace;
+  letter-spacing: 0.05em;
+}
+
+/* ─── Responsive ─── */
+@media (max-width: 460px) {
+  .sketch-panel {
+    bottom: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+    height: 100vh;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+  .sketch-fab {
+    bottom: 16px;
+    right: 16px;
+    width: 56px;
+    height: 56px;
+  }
+  .sketch-fab .robot-svg {
+    width: 28px;
+    height: 28px;
+  }
+}
