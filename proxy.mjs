@@ -5,8 +5,7 @@ import http from 'http'
 
 const PORT = 3001
 const CLAUDE_API = 'https://api.anthropic.com/v1/messages'
-const API_KEY = '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'
-
+const API_KEY = process.env.ANTHROPIC_API_KEY || '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'
 const server = http.createServer(async (req, res) => {
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*')
