@@ -788,7 +788,12 @@ export default function Ventas({ onNavigate, user }) {
         {showScanner && (
           <BarcodeScanner
             products={products}
-            onProductFound={(p) => { addToCart(p); setShowScanner(false) }}
+            onProductFound={(p) => { addToCart(p) }}
+            onRegisterProduct={async (newProd) => {
+              const { data, error } = await supabase.from('productos').insert([newProd]).select().single()
+              if (!error) await fetchProducts()
+              return data
+            }}
             onClose={() => setShowScanner(false)}
           />
         )}

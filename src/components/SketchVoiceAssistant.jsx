@@ -1,6 +1,6 @@
 // src/components/SketchVoiceAssistant.jsx
-// Asistente de voz para Sketch v4 — Motor NLP LOCAL (SIN API)
-// Funciona 100% offline, sin backend, sin CORS
+// Asistente de voz para Sketch v5 — HÍBRIDO: Claude API + NLP Local como fallback
+// Requiere proxy.mjs corriendo en localhost:3001
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   getProductos,
@@ -14,8 +14,10 @@ import {
 import './SketchVoiceAssistant.css'
 
 // ═══════════════════════════════════════════════════════
-// ─── MOTOR NLP LOCAL — Sin API, sin backend ───
+// ─── CLAUDE API (via proxy local) ───
 // ═══════════════════════════════════════════════════════
+const PROXY_URL = 'http://localhost:3001'
+const USE_CLAUDE = true // Cambiar a false para usar solo NLP local
 
 function getGreeting() {
   const hour = new Date().getHours()
@@ -24,7 +26,99 @@ function getGreeting() {
   return 'Buenas noches'
 }
 
-// Corrección de nombres comunes mal captados por voz
+async function askClaude(conversationHistory, productList) {
+  const greeting = getGreeting()
+  const systemPrompt = `Eres "Sketch", un asistente de voz para gestión de inventario en pequeñas tiendas mexicanas (abarrotes, misceláneas, tienditas).
+
+PERSONALIDAD:
+- Tratas al usuario de "usted" siempre (formal pero cálido)
+- Eres eficiente, claro y amigable — como un empleado de confianza
+- Respuestas CORTAS (máximo 2-3 oraciones) porque se leen en voz alta
+- Nunca uses emojis, markdown, asteriscos ni formato especial — solo texto plano
+- Si el usuario saluda, responde con "${greeting}" y pregunta en qué ayuda
+
+INVENTARIO ACTUAL (${productList.length} productos):
+${JSON.stringify(productList.map(p => ({ id: p.id, nombre: p.nombre, precio: p.precio, stock: p.stock, stock_minimo: p.stock_minimo, categoria: p.categoria })))}
+
+CAPACIDADES — Responde SIEMPRE en JSON válido con esta estructura:
+{
+  "response": "texto que se le dirá al usuario en voz alta",
+  "action": null | {
+    "type": "add" | "delete" | "editPrice" | "editStock" | "addStock" | "sell" | "alerts" | "list",
+    "data": { ...datos relevantes }
+  },
+  "needs_confirmation": true | false
+}
+
+REGLAS DE ACCIONES:
+1. "add": data: { nombre, precio, stock, stock_minimo, categoria }
+   - Si el usuario dice presentación (600ml, 1L, lata), INCLÚYELA en el nombre
+   - Si falta presentación para refrescos/botanas/lácteos, PREGUNTA
+   - Corrige nombres de voz: "cosacola"→"Coca-Cola", "savritas"→"Sabritas"
+   - Categorías auto: Bebidas, Botanas, Panadería, Lácteos, Abarrotes, Limpieza, etc.
+   - Si falta precio o stock, pregunta UNO a la vez
+   - NUNCA agregues sin precio
+
+2. "delete": data: { id, nombre }
+3. "editPrice": data: { id, nombre, nuevoPrecio }
+4. "editStock": data: { id, nombre, nuevoStock }
+5. "addStock": data: { id, nombre, cantidad }
+6. "sell": Para ventas rápidas. data: { items: [{ id, nombre, precio, cantidad }], total }
+   - "Cobra 2 cocas y unas sabritas" → busca en inventario, calcula total
+7. "alerts": Sin data
+8. "list": Sin data
+
+CONFIRMACIÓN:
+- needs_confirmation = true para: add, delete, editPrice, editStock, addStock, sell
+- needs_confirmation = false para: consultas, alertas, listar, saludos, ayuda
+- Cuando confirmes, resume la acción y termina con "¿Confirmo?"
+
+IMPORTANTE:
+- SIEMPRE JSON válido, sin backticks
+- Busca coincidencias parciales ("coca" → "Coca-Cola 600ml")
+- Si hay múltiples coincidencias, pregunta cuál
+- Si dice "sí/dale/ok" → confirma. Si dice "no/cancela" → cancela
+
+DESPEDIDAS:
+- Si el usuario se despide ("adiós", "bye", "nos vemos", "ya estuvo", "hasta luego", "ya me voy", "chao", "ya wey", "nel ya", "ya valió"), responde con una despedida cálida y breve.
+- Usa action type "dismiss" para cerrar el panel automáticamente.
+- Ejemplo: { "response": "¡Hasta luego! Que le vaya bien en la tienda.", "action": { "type": "dismiss" }, "needs_confirmation": false }
+- Varía las despedidas: "¡Que le vaya chido!", "¡Ahí nos vemos, cuídese!", "¡Éxito hoy! Aquí estaré cuando me necesite."
+
+SALUDOS CASUALES:
+- "¿Qué pedo?", "¿Qué onda?", "¿Qué rollo?" → responde casual pero profesional: "¡Qué onda! Aquí andamos. ¿En qué le echo la mano?"
+- "¿Cómo estás?" → "¡Bien, listo para chambear! ¿Qué necesita?"
+- Groserías casuales tipo mexicano ("no mames", "wey", "chingón") → ignóralas con naturalidad, no las repitas, responde normal`
+
+  try {
+    const response = await fetch(PROXY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: systemPrompt,
+        messages: conversationHistory
+      })
+    })
+
+    if (!response.ok) throw new Error(`API error: ${response.status}`)
+
+    const data = await response.json()
+    const text = data.content?.[0]?.text || ''
+    const cleaned = text.replace(/```json|```/g, '').trim()
+    return JSON.parse(cleaned)
+  } catch (err) {
+    console.error('Claude API error:', err)
+    return null // null = fallback to local NLP
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════
+// ─── MOTOR NLP LOCAL (fallback) ───
+// ═══════════════════════════════════════════════════════
+
 const VOICE_CORRECTIONS = {
   'cosacola': 'Coca-Cola', 'coca cola': 'Coca-Cola', 'cocacola': 'Coca-Cola', 'coca': 'Coca-Cola',
   'coquita': 'Coca-Cola', 'koka': 'Coca-Cola', 'koka kola': 'Coca-Cola',
@@ -44,129 +138,86 @@ const VOICE_CORRECTIONS = {
   'pinol': 'Pinol', 'fabuloso': 'Fabuloso', 'cloralex': 'Cloralex',
 }
 
-// Categoría automática por producto
 const CATEGORY_MAP = {
-  'Bebidas': ['coca-cola', 'pepsi', 'fanta', 'mirinda', 'sprite', 'ciel', 'bonafont', 'tang', 'jumex', 'boing', 'jarritos', 'manzanita', 'squirt', 'fresca', 'sidral', 'agua', 'refresco', 'jugo', 'limonada'],
-  'Botanas': ['sabritas', 'doritos', 'cheetos', 'ruffles', 'takis', 'cacahuates', 'papas', 'chicharrones', 'palomitas', 'totis', 'barcel'],
-  'Panadería': ['bimbo', 'marinela', 'gansito', 'chokis', 'pan', 'galletas', 'gamesa', 'tortillas', 'wonder', 'pingüinos', 'mantecadas'],
-  'Lácteos': ['lala', 'alpura', 'leche', 'queso', 'yogurt', 'crema', 'mantequilla', 'danonino'],
-  'Abarrotes': ['maruchan', 'atún', 'arroz', 'frijol', 'frijoles', 'aceite', 'azúcar', 'azucar', 'sal', 'harina', 'sopa', 'pasta', 'nescafé', 'café', 'avena', 'cereal', 'zucaritas', 'mayonesa'],
-  'Limpieza': ['pinol', 'fabuloso', 'cloralex', 'jabón', 'jabon', 'detergente', 'cloro', 'papel', 'servilletas', 'escoba', 'trapeador'],
-  'Dulcería': ['dulce', 'chicle', 'paleta', 'mazapán', 'chocolate', 'gomitas', 'luneta', 'carlos v', 'pulparindo', 'pelon', 'vero'],
-  'Farmacia': ['aspirina', 'paracetamol', 'alcohol', 'curitas', 'algodón', 'pepto'],
-  'Cerveza': ['modelo', 'corona', 'tecate', 'victoria', 'indio', 'pacifico', 'cerveza', 'michelob', 'heineken'],
-  'Tabaco': ['cigarro', 'cigarros', 'marlboro', 'camel', 'pall mall', 'encendedor'],
+  'Bebidas': ['coca-cola', 'pepsi', 'fanta', 'mirinda', 'sprite', 'ciel', 'bonafont', 'tang', 'jumex', 'boing', 'jarritos', 'agua', 'refresco', 'jugo'],
+  'Botanas': ['sabritas', 'doritos', 'cheetos', 'ruffles', 'takis', 'cacahuates', 'papas', 'chicharrones'],
+  'Panadería': ['bimbo', 'marinela', 'gansito', 'chokis', 'pan', 'galletas', 'gamesa', 'tortillas'],
+  'Lácteos': ['lala', 'alpura', 'leche', 'queso', 'yogurt', 'crema'],
+  'Abarrotes': ['maruchan', 'atún', 'arroz', 'frijol', 'aceite', 'azúcar', 'sal', 'harina', 'nescafé', 'café'],
+  'Limpieza': ['pinol', 'fabuloso', 'cloralex', 'jabón', 'detergente', 'cloro', 'papel'],
+  'Dulcería': ['dulce', 'chicle', 'paleta', 'mazapán', 'chocolate', 'gomitas'],
+  'Cerveza': ['modelo', 'corona', 'tecate', 'victoria', 'cerveza'],
 }
 
-function detectCategory(productName) {
-  const lower = productName.toLowerCase()
-  for (const [cat, keywords] of Object.entries(CATEGORY_MAP)) {
-    if (keywords.some(kw => lower.includes(kw))) return cat
+function detectCategory(name) {
+  const l = name.toLowerCase()
+  for (const [cat, kws] of Object.entries(CATEGORY_MAP)) {
+    if (kws.some(k => l.includes(k))) return cat
   }
   return 'General'
 }
 
 function correctProductName(raw) {
-  const lower = raw.toLowerCase().trim()
+  const l = raw.toLowerCase().trim()
   for (const [wrong, correct] of Object.entries(VOICE_CORRECTIONS)) {
-    if (lower === wrong || lower.includes(wrong)) {
-      const remaining = lower.replace(wrong, '').trim()
-      return remaining ? `${correct} ${remaining}` : correct
+    if (l === wrong || l.includes(wrong)) {
+      const rest = l.replace(wrong, '').trim()
+      return rest ? `${correct} ${rest}` : correct
     }
   }
   return raw.trim().replace(/\b\w/g, c => c.toUpperCase())
 }
 
-// Extract presentation/size from text
-function extractPresentation(text) {
-  const t = text.toLowerCase()
-  const patterns = [
-    /(\d+)\s*ml/i,
-    /(\d+(?:\.\d+)?)\s*(?:litros?|lt?|lts)/i,
-    /(\d+)\s*(?:gramos?|gr?|gs)/i,
-    /(\d+)\s*(?:kilos?|kg)/i,
-    /(\d+)\s*(?:piezas?|pzs?|pz)/i,
-    /(\d+)\s*(?:pack|paquete)/i,
-  ]
-  for (const pat of patterns) {
-    const m = t.match(pat)
+function extractPresentation(t) {
+  const lower = t.toLowerCase()
+  const pats = [/(\d+)\s*ml/i, /(\d+(?:\.\d+)?)\s*(?:litros?|lt?|lts)/i, /(\d+)\s*(?:gramos?|gr?|gs)/i]
+  for (const p of pats) {
+    const m = lower.match(p)
     if (m) {
       if (/litros?|lt|lts/i.test(m[0])) return `${m[1]}L`
       if (/ml/i.test(m[0])) return `${m[1]}ml`
       if (/gramos?|gr?|gs/i.test(m[0])) return `${m[1]}g`
-      if (/kilos?|kg/i.test(m[0])) return `${m[1]}kg`
-      if (/piezas?|pzs?|pz/i.test(m[0])) return `${m[1]}pz`
-      if (/pack|paquete/i.test(m[0])) return `Pack ${m[1]}`
-      return m[0]
     }
   }
-  if (/\blata\b/i.test(t)) return 'Lata'
-  if (/\bbotella\b/i.test(t)) return 'Botella'
-  if (/\bsobr(?:e|es?)\b/i.test(t)) return 'Sobre'
-  if (/\bbolsa\b/i.test(t)) return 'Bolsa'
-  if (/\bcaja\b/i.test(t)) return 'Caja'
-  if (/\bfrasco\b/i.test(t)) return 'Frasco'
-  if (/\bchico\b/i.test(t)) return 'Chico'
-  if (/\bmediano\b/i.test(t)) return 'Mediano'
-  if (/\bgrande\b/i.test(t)) return 'Grande'
-  if (/\bfamiliar\b/i.test(t)) return 'Familiar'
-  if (/\bpersonal\b/i.test(t)) return 'Personal'
+  if (/\blata\b/i.test(lower)) return 'Lata'
+  if (/\bbotella\b/i.test(lower)) return 'Botella'
+  if (/\bgrande\b/i.test(lower)) return 'Grande'
+  if (/\bchico\b/i.test(lower)) return 'Chico'
+  if (/\bfamiliar\b/i.test(lower)) return 'Familiar'
   return null
 }
 
-// Extract price from text
-function extractPrice(text) {
-  const t = text.toLowerCase()
-  const patterns = [
-    /(?:a|por|precio(?:\s+de)?|cuesta|vale|de|en|con(?:\s+un)?(?:\s+precio)?(?:\s+de)?)\s+\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:pesos|varos|bolas)?/i,
+function extractPrice(t) {
+  const pats = [
+    /(?:a|por|precio(?:\s+de)?|cuesta|vale|con(?:\s+un)?(?:\s+precio)?(?:\s+de)?)\s+\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:pesos|varos)?/i,
     /\$\s*(\d+(?:\.\d{1,2})?)/,
-    /(\d+(?:\.\d{1,2})?)\s*(?:pesos|varos|bolas)/i,
+    /(\d+(?:\.\d{1,2})?)\s*(?:pesos|varos)/i,
   ]
-  for (const pat of patterns) {
-    const m = t.match(pat)
-    if (m) return parseFloat(m[1])
-  }
+  for (const p of pats) { const m = t.toLowerCase().match(p); if (m) return parseFloat(m[1]) }
   return null
 }
 
-// Extract stock/quantity from text
-function extractStock(text) {
-  const t = text.toLowerCase()
-  const patterns = [
-    /(?:con|stock(?:\s+de)?|cantidad(?:\s+de)?|existencia(?:\s+de)?|tengo|hay|inicio(?:\s+con)?|empiezo(?:\s+con)?)\s+(\d+)\s*(?:unidades|piezas|en\s+stock|en\s+existencia)?/i,
+function extractStock(t) {
+  const pats = [
+    /(?:con|stock(?:\s+de)?|cantidad(?:\s+de)?|existencia|tengo|hay)\s+(\d+)\s*(?:unidades|piezas|en\s+stock)?/i,
     /(\d+)\s*(?:unidades|piezas|en\s+stock|en\s+existencia|de\s+stock)/i,
   ]
-  for (const pat of patterns) {
-    const m = t.match(pat)
-    if (m) return parseInt(m[1])
-  }
+  for (const p of pats) { const m = t.toLowerCase().match(p); if (m) return parseInt(m[1]) }
   return null
 }
 
-// Extract the product name from an "add" command
 function extractProductNameFromAdd(text) {
-  const t = text.toLowerCase()
-  let cleaned = t
+  let c = text.toLowerCase()
     .replace(/^(?:agrega|agregar|añade|añadir|registra|registrar|mete|meter|pon|poner|da de alta|nuevo producto|quiero agregar|agrega un|agrega una|agregar un|agregar una|registra un|registra una|añade un|añade una|mete un|mete una|quiero agregar un|quiero agregar una)\s*/i, '')
-    .trim()
-  
-  // Remove price, stock info to isolate the product name
-  cleaned = cleaned
-    .replace(/(?:a|por|precio(?:\s+de)?|cuesta|vale|con(?:\s+un)?(?:\s+precio)?(?:\s+de)?)\s+\$?\s*\d+(?:\.\d{1,2})?\s*(?:pesos|varos|bolas)?/gi, '')
+    .replace(/(?:a|por|precio(?:\s+de)?|cuesta|vale|con(?:\s+un)?(?:\s+precio)?(?:\s+de)?)\s+\$?\s*\d+(?:\.\d{1,2})?\s*(?:pesos|varos)?/gi, '')
     .replace(/\$\s*\d+(?:\.\d{1,2})?/g, '')
-    .replace(/\d+(?:\.\d{1,2})?\s*(?:pesos|varos|bolas)/gi, '')
-    .replace(/(?:con|stock(?:\s+de)?|cantidad(?:\s+de)?|existencia(?:\s+de)?|tengo|hay)\s+\d+\s*(?:unidades|piezas|en\s+stock|en\s+existencia)?/gi, '')
+    .replace(/\d+(?:\.\d{1,2})?\s*(?:pesos|varos)/gi, '')
+    .replace(/(?:con|stock(?:\s+de)?|cantidad(?:\s+de)?|existencia|tengo|hay)\s+\d+\s*(?:unidades|piezas|en\s+stock)?/gi, '')
     .replace(/\d+\s*(?:unidades|piezas|en\s+stock|en\s+existencia|de\s+stock)/gi, '')
-    .replace(/\s*,\s*/g, ' ')
-    .replace(/\s+y\s+$/g, '')
-    .replace(/\s+con\s*$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-  
-  return cleaned || null
+    .replace(/\s+/g, ' ').trim()
+  return c || null
 }
 
-// Find a product in inventory by partial name match
 function findProduct(products, query) {
   const q = query.toLowerCase()
   let found = products.filter(p => p.nombre.toLowerCase() === q)
@@ -178,383 +229,153 @@ function findProduct(products, query) {
   return { exact: found.length === 1, products: found }
 }
 
-// Products that typically need a presentation specified
-const NEEDS_PRESENTATION = ['coca-cola', 'pepsi', 'fanta', 'sprite', 'mirinda', 'ciel', 'bonafont', 'modelo', 'corona', 'tecate', 'victoria', 'sabritas', 'doritos', 'cheetos', 'ruffles', 'takis', 'bimbo', 'marinela', 'maruchan', 'leche', 'lala', 'alpura', 'jumex', 'boing', 'jarritos', 'tang', 'nescafé']
+const NEEDS_PRES = ['coca-cola', 'pepsi', 'fanta', 'sprite', 'ciel', 'bonafont', 'modelo', 'corona', 'tecate', 'sabritas', 'doritos', 'cheetos', 'ruffles', 'takis', 'bimbo', 'marinela', 'maruchan', 'leche', 'lala', 'alpura', 'jumex', 'tang', 'nescafé']
 
-function needsPresentation(productName) {
-  const lower = productName.toLowerCase()
-  return NEEDS_PRESENTATION.some(p => lower.includes(p))
-}
+function needsPresentation(name) { return NEEDS_PRES.some(p => name.toLowerCase().includes(p)) }
 
-// ─── Main NLP Processor ───
 function processLocalNLP(transcript, products, pendingCtx) {
   const t = transcript.toLowerCase().replace(/[.!?]+$/, '').trim()
 
-  // ─── GREETING ───
-  if (/^(hola|hey|buenas?|qué onda|que onda|qué tal|que tal|buenos días|buenas tardes|buenas noches|saludos|qué hay|que hay|ey|oye)(\s|$)/i.test(t) && t.length < 40) {
-    const greeting = getGreeting()
-    const hour = new Date().getHours()
-    let extra = ''
-    if (hour >= 5 && hour < 9) extra = ' ¿Listo para empezar el día? Dígame en qué le ayudo.'
-    else if (hour >= 9 && hour < 14) extra = ' ¿En qué le puedo ayudar hoy?'
-    else if (hour >= 14 && hour < 19) extra = ' ¿Cómo va la tienda? Dígame en qué le ayudo.'
-    else extra = ' ¿En qué le ayudo? ¿Hacemos corte o revisamos algo?'
-    return { response: `¡${greeting}! Aquí Sketch a sus órdenes.${extra}`, action: null, needs_confirmation: false }
+  if (/^(hola|hey|buenas?|qué onda|que onda|qué tal|que tal|buenos días|buenas tardes|buenas noches|saludos)(\s|$)/i.test(t) && t.length < 40) {
+    const g = getGreeting()
+    const h = new Date().getHours()
+    let x = h < 9 ? ' ¿Listo para empezar?' : h < 14 ? ' ¿En qué le ayudo?' : h < 19 ? ' ¿Cómo va la tienda?' : ' ¿Hacemos corte?'
+    return { response: `¡${g}! Aquí Sketch a sus órdenes.${x}`, action: null, needs_confirmation: false }
   }
 
-  // ─── HELP ───
-  if (/^(ayuda|qué puedes hacer|que puedes hacer|cómo funciona|como funciona|opciones|comandos|qué sabes hacer|que sabes hacer|ayúdame)$/i.test(t)) {
-    return {
-      response: 'Puedo ayudarle con su inventario. Diga por ejemplo: "Agrega una Coca-Cola de 600 ml a 18 pesos con 24 en stock", o "Cuánto cuesta la leche", o "Qué productos tienen stock bajo", o "Muéstrame el inventario".',
-      action: null, needs_confirmation: false
-    }
+  // Casual greetings (mexicanismos)
+  if (/^(qué pedo|que pedo|qué rollo|que rollo|qué onda wey|cómo estás|como estas|qué hay|que hay)/i.test(t)) {
+    return { response: '¡Qué onda! Aquí andamos, listo para chambear. ¿En qué le echo la mano?', action: null, needs_confirmation: false }
   }
 
-  // ─── THANKS ───
-  if (/^(gracias|muchas gracias|te agradezco|chido|buena onda|genial|excelente|perfecto|bien hecho)/i.test(t)) {
-    const responses = [
-      '¡Para servirle! ¿Algo más en que le ayude?',
-      '¡Con gusto! Aquí estoy si necesita algo más.',
-      '¡De nada! Dígame si necesita otra cosa.',
+  // ─── FAREWELL / DESPEDIDA ───
+  if (/^(adiós|adios|bye|nos vemos|hasta luego|hasta mañana|ya estuvo|ya me voy|chao|chau|ya wey|nel ya|ya valió|ya valio|me voy|ahí te dejo|ahi te dejo|hasta pronto|cuídate|cuidate|ya quedó|ya quedo|eso es todo|es todo|nada más|nada mas|ya no|listo gracias|ya con eso)/i.test(t)) {
+    const despedidas = [
+      '¡Hasta luego! Que le vaya bien en la tienda.',
+      '¡Ahí nos vemos! Aquí estaré cuando me necesite.',
+      '¡Éxito hoy! Diga "Hey Sketch" cuando me ocupe.',
+      '¡Que le vaya chido! Cuídese.',
+      '¡Sale! Aquí lo espero para la siguiente.',
     ]
-    return { response: responses[Math.floor(Math.random() * responses.length)], action: null, needs_confirmation: false }
+    return { response: despedidas[Math.floor(Math.random() * despedidas.length)], action: { type: 'dismiss' }, needs_confirmation: false }
   }
 
-  // ─── PENDING CONTEXT: Waiting for missing data ───
+  if (/^(ayuda|qué puedes hacer|que puedes hacer|cómo funciona|como funciona)$/i.test(t)) {
+    return { response: 'Puedo agregar productos, consultar precios, revisar stock bajo, registrar ventas y más. Diga por ejemplo: "Agrega una Coca de 600 ml a 18 pesos con 24 en stock" o "Cobra 2 cocas y unas sabritas".', action: null, needs_confirmation: false }
+  }
+
+  if (/^(gracias|muchas gracias|chido|genial|perfecto)/i.test(t)) {
+    return { response: '¡Para servirle! ¿Algo más?', action: null, needs_confirmation: false }
+  }
+
+  // Pending context
   if (pendingCtx) {
     const ctx = { ...pendingCtx }
-
-    // Waiting for product name
     if (ctx.waitingFor === 'name') {
-      // The user just said the product name (and maybe more data too)
-      const presentation = extractPresentation(t)
-      const price = extractPrice(t)
-      const stock = extractStock(t)
-      let correctedName = correctProductName(t
-        .replace(/(?:a|por|precio(?:\s+de)?|cuesta|vale|con(?:\s+un)?(?:\s+precio)?(?:\s+de)?)\s+\$?\s*\d+(?:\.\d{1,2})?\s*(?:pesos|varos|bolas)?/gi, '')
-        .replace(/\$\s*\d+(?:\.\d{1,2})?/g, '')
-        .replace(/\d+(?:\.\d{1,2})?\s*(?:pesos|varos|bolas)/gi, '')
-        .replace(/(?:con|stock(?:\s+de)?|cantidad(?:\s+de)?|existencia(?:\s+de)?|tengo|hay)\s+\d+\s*(?:unidades|piezas|en\s+stock|en\s+existencia)?/gi, '')
-        .replace(/\d+\s*(?:unidades|piezas|en\s+stock|en\s+existencia|de\s+stock)/gi, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-      )
-      if (!correctedName || correctedName.length < 2) {
-        return { response: 'No capté el nombre. Dígame el producto, por ejemplo: Coca-Cola, Sabritas, Maruchan...', action: null, needs_confirmation: false, pendingContext: ctx }
-      }
-      const categoria = detectCategory(correctedName)
-
-      if (presentation && !correctedName.toLowerCase().includes(presentation.toLowerCase())) {
-        correctedName = `${correctedName} ${presentation}`
-      }
-
-      if (!presentation && needsPresentation(correctedName)) {
-        return {
-          response: `${correctedName}, perfecto. ¿De qué presentación? Por ejemplo: 600 ml, 1 litro, lata, botella...`,
-          action: null, needs_confirmation: false,
-          pendingContext: { waitingFor: 'presentation', baseName: correctedName, nombre: correctedName, precio: price, stock, categoria, stock_minimo: 5 }
-        }
-      }
-      if (!price) {
-        return {
-          response: `${correctedName}, entendido. ¿A cómo lo va a vender?`,
-          action: null, needs_confirmation: false,
-          pendingContext: { waitingFor: 'price', nombre: correctedName, precio: null, stock, categoria, stock_minimo: 5 }
-        }
-      }
-      if (stock == null) {
-        return {
-          response: `${correctedName} a $${price}. ¿Cuántas unidades tiene en existencia?`,
-          action: null, needs_confirmation: false,
-          pendingContext: { waitingFor: 'stock', nombre: correctedName, precio: price, stock: null, categoria, stock_minimo: 5 }
-        }
-      }
-      return {
-        response: `Voy a registrar ${correctedName} a $${price}, con ${stock} unidades, categoría ${categoria}. ¿Confirmo?`,
-        action: { type: 'add', data: { nombre: correctedName, precio: price, stock, stock_minimo: 5, categoria } },
-        needs_confirmation: true, pendingContext: null
-      }
+      const pres = extractPresentation(t); const price = extractPrice(t); const stock = extractStock(t)
+      let name = correctProductName(t.replace(/(?:a|por)\s+\$?\s*\d+.*$/gi, '').replace(/(?:con|stock)\s+\d+.*$/gi, '').trim())
+      if (!name || name.length < 2) return { response: 'No capté el nombre. Dígame el producto.', action: null, needs_confirmation: false, pendingContext: ctx }
+      const cat = detectCategory(name)
+      if (pres && !name.toLowerCase().includes(pres.toLowerCase())) name = `${name} ${pres}`
+      if (!pres && needsPresentation(name)) return { response: `${name}, ¿de qué presentación? 600ml, 1 litro, lata...`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'presentation', baseName: name, nombre: name, precio: price, stock, categoria: cat, stock_minimo: 5 } }
+      if (!price) return { response: `${name}, ¿a cómo lo vende?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'price', nombre: name, precio: null, stock, categoria: cat, stock_minimo: 5 } }
+      if (stock == null) return { response: `${name} a $${price}. ¿Cuántas unidades?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'stock', nombre: name, precio: price, stock: null, categoria: cat, stock_minimo: 5 } }
+      return { response: `Registrar ${name} a $${price}, ${stock} uds, categoría ${cat}. ¿Confirmo?`, action: { type: 'add', data: { nombre: name, precio: price, stock, stock_minimo: 5, categoria: cat } }, needs_confirmation: true, pendingContext: null }
     }
-
-    // Waiting for presentation
     if (ctx.waitingFor === 'presentation') {
-      const pres = extractPresentation(t)
+      const pres = extractPresentation(t) || t.trim()
       if (pres) {
-        ctx.nombre = `${ctx.baseName} ${pres}`
-        if (!ctx.precio) {
-          ctx.waitingFor = 'price'
-          return { response: `Perfecto, ${ctx.nombre}. ¿A cómo lo va a vender?`, action: null, needs_confirmation: false, pendingContext: ctx }
-        }
-        if (ctx.stock == null) {
-          ctx.waitingFor = 'stock'
-          return { response: `${ctx.nombre} a $${ctx.precio}. ¿Cuántas unidades tiene en existencia?`, action: null, needs_confirmation: false, pendingContext: ctx }
-        }
-        return {
-          response: `Voy a registrar ${ctx.nombre} a $${ctx.precio}, con ${ctx.stock} unidades, categoría ${ctx.categoria}. ¿Confirmo?`,
-          action: { type: 'add', data: { nombre: ctx.nombre, precio: ctx.precio, stock: ctx.stock, stock_minimo: ctx.stock_minimo || 5, categoria: ctx.categoria } },
-          needs_confirmation: true, pendingContext: null
-        }
+        ctx.nombre = `${ctx.baseName} ${typeof pres === 'string' ? correctProductName(pres) : pres}`
+        if (!ctx.precio) { ctx.waitingFor = 'price'; return { response: `${ctx.nombre}. ¿A cómo lo vende?`, action: null, needs_confirmation: false, pendingContext: ctx } }
+        if (ctx.stock == null) { ctx.waitingFor = 'stock'; return { response: `${ctx.nombre} a $${ctx.precio}. ¿Cuántas unidades?`, action: null, needs_confirmation: false, pendingContext: ctx } }
+        return { response: `Registrar ${ctx.nombre} a $${ctx.precio}, ${ctx.stock} uds. ¿Confirmo?`, action: { type: 'add', data: { nombre: ctx.nombre, precio: ctx.precio, stock: ctx.stock, stock_minimo: 5, categoria: ctx.categoria } }, needs_confirmation: true, pendingContext: null }
       }
-      const raw = t.trim()
-      if (raw.length > 0 && raw.length < 30) {
-        ctx.nombre = `${ctx.baseName} ${correctProductName(raw)}`
-        if (!ctx.precio) {
-          ctx.waitingFor = 'price'
-          return { response: `Entendido, ${ctx.nombre}. ¿A qué precio lo vende?`, action: null, needs_confirmation: false, pendingContext: ctx }
-        }
-        if (ctx.stock == null) {
-          ctx.waitingFor = 'stock'
-          return { response: `${ctx.nombre} a $${ctx.precio}. ¿Con cuántas unidades empieza?`, action: null, needs_confirmation: false, pendingContext: ctx }
-        }
-        return {
-          response: `Voy a registrar ${ctx.nombre} a $${ctx.precio}, con ${ctx.stock} unidades, categoría ${ctx.categoria}. ¿Confirmo?`,
-          action: { type: 'add', data: { nombre: ctx.nombre, precio: ctx.precio, stock: ctx.stock, stock_minimo: ctx.stock_minimo || 5, categoria: ctx.categoria } },
-          needs_confirmation: true, pendingContext: null
-        }
-      }
-      return { response: 'No entendí la presentación. Dígame por ejemplo: 600 ml, 1 litro, lata, botella...', action: null, needs_confirmation: false, pendingContext: ctx }
+      return { response: 'Dígame la presentación: 600ml, 1 litro, lata...', action: null, needs_confirmation: false, pendingContext: ctx }
     }
-
-    // Waiting for price
     if (ctx.waitingFor === 'price') {
       const price = extractPrice(t) || parseFloat(t.replace(/[^0-9.]/g, ''))
-      if (price && price > 0) {
+      if (price > 0) {
         ctx.precio = price
-        if (ctx.stock == null) {
-          ctx.waitingFor = 'stock'
-          return { response: `$${price}, anotado. ¿Cuántas unidades tiene en existencia?`, action: null, needs_confirmation: false, pendingContext: ctx }
-        }
-        return {
-          response: `Voy a registrar ${ctx.nombre} a $${ctx.precio}, con ${ctx.stock} unidades, categoría ${ctx.categoria}. ¿Confirmo?`,
-          action: { type: 'add', data: { nombre: ctx.nombre, precio: ctx.precio, stock: ctx.stock, stock_minimo: ctx.stock_minimo || 5, categoria: ctx.categoria } },
-          needs_confirmation: true, pendingContext: null
-        }
+        if (ctx.stock == null) { ctx.waitingFor = 'stock'; return { response: `$${price} anotado. ¿Cuántas unidades?`, action: null, needs_confirmation: false, pendingContext: ctx } }
+        return { response: `Registrar ${ctx.nombre} a $${price}, ${ctx.stock} uds. ¿Confirmo?`, action: { type: 'add', data: { nombre: ctx.nombre, precio: price, stock: ctx.stock, stock_minimo: 5, categoria: ctx.categoria } }, needs_confirmation: true, pendingContext: null }
       }
-      return { response: 'No capté el precio. Dígame solo el número, por ejemplo: 18 pesos o 25.50', action: null, needs_confirmation: false, pendingContext: ctx }
+      return { response: 'Dígame el precio, por ejemplo: 18 pesos', action: null, needs_confirmation: false, pendingContext: ctx }
     }
-
-    // Waiting for stock
     if (ctx.waitingFor === 'stock') {
       const stock = extractStock(t) || parseInt(t.replace(/[^0-9]/g, ''))
       if (stock >= 0 && !isNaN(stock)) {
-        ctx.stock = stock
-        return {
-          response: `Voy a registrar ${ctx.nombre} a $${ctx.precio}, con ${ctx.stock} unidades, categoría ${ctx.categoria}. ¿Confirmo?`,
-          action: { type: 'add', data: { nombre: ctx.nombre, precio: ctx.precio, stock: ctx.stock, stock_minimo: ctx.stock_minimo || 5, categoria: ctx.categoria } },
-          needs_confirmation: true, pendingContext: null
-        }
+        return { response: `Registrar ${ctx.nombre} a $${ctx.precio}, ${stock} uds. ¿Confirmo?`, action: { type: 'add', data: { nombre: ctx.nombre, precio: ctx.precio, stock, stock_minimo: 5, categoria: ctx.categoria } }, needs_confirmation: true, pendingContext: null }
       }
-      return { response: 'No entendí la cantidad. Dígame solo el número, por ejemplo: 24', action: null, needs_confirmation: false, pendingContext: ctx }
-    }
-
-    // Waiting for which product (multiple matches)
-    if (ctx.waitingFor === 'which_product') {
-      const match = ctx.options.find(p => t.includes(p.nombre.toLowerCase()) || p.nombre.toLowerCase().includes(t))
-      if (match) {
-        if (ctx.originalAction === 'price_query') {
-          return { response: `${match.nombre} tiene un precio de $${match.precio}.`, action: null, needs_confirmation: false }
-        }
-        if (ctx.originalAction === 'stock_query') {
-          return { response: `${match.nombre} tiene ${match.stock} unidades en stock.`, action: null, needs_confirmation: false }
-        }
-        if (ctx.originalAction === 'delete') {
-          return {
-            response: `Voy a eliminar "${match.nombre}" del inventario. ¿Confirmo?`,
-            action: { type: 'delete', data: { id: match.id, nombre: match.nombre } },
-            needs_confirmation: true, pendingContext: null
-          }
-        }
-      }
-      const num = parseInt(t.replace(/[^0-9]/g, ''))
-      if (num >= 1 && num <= ctx.options.length) {
-        const selected = ctx.options[num - 1]
-        if (ctx.originalAction === 'price_query') return { response: `${selected.nombre} tiene un precio de $${selected.precio}.`, action: null, needs_confirmation: false }
-        if (ctx.originalAction === 'stock_query') return { response: `${selected.nombre} tiene ${selected.stock} unidades en stock.`, action: null, needs_confirmation: false }
-      }
-      return { response: 'No identifiqué cuál. Dígame el nombre completo o el número de la opción.', action: null, needs_confirmation: false, pendingContext: ctx }
+      return { response: 'Dígame la cantidad, por ejemplo: 24', action: null, needs_confirmation: false, pendingContext: ctx }
     }
   }
 
-  // ─── ADD PRODUCT ───
+  // Add
   if (/(?:agrega|agregar|añade|añadir|registra|registrar|mete|meter|pon|poner|da de alta|nuevo producto|quiero agregar)/i.test(t)) {
     const rawName = extractProductNameFromAdd(transcript)
-    if (!rawName || /^(un|una|el|la|los|las|producto|un producto|una producto)$/i.test(rawName.trim())) {
-      return {
-        response: '¿Qué producto quiere agregar? Dígame el nombre, por ejemplo: Coca-Cola de 600 ml.',
-        action: null, needs_confirmation: false,
-        pendingContext: { waitingFor: 'name' }
-      }
+    if (!rawName || /^(un|una|el|la|producto)$/i.test(rawName.trim())) {
+      return { response: '¿Qué producto quiere agregar?', action: null, needs_confirmation: false, pendingContext: { waitingFor: 'name' } }
     }
-
-    const presentation = extractPresentation(t)
-    const price = extractPrice(t)
-    const stock = extractStock(t)
-    let correctedName = correctProductName(rawName)
-    const categoria = detectCategory(correctedName)
-    
-    if (presentation && !correctedName.toLowerCase().includes(presentation.toLowerCase())) {
-      correctedName = `${correctedName} ${presentation}`
-    }
-
-    // If product typically needs presentation and none given
-    if (!presentation && needsPresentation(correctedName)) {
-      return {
-        response: `${correctedName}, perfecto. ¿De qué presentación? Por ejemplo: 600 ml, 1 litro, lata, botella...`,
-        action: null, needs_confirmation: false,
-        pendingContext: { waitingFor: 'presentation', baseName: correctedName, nombre: correctedName, precio: price, stock, categoria, stock_minimo: 5 }
-      }
-    }
-
-    if (!price) {
-      return {
-        response: `${correctedName}, entendido. ¿A cómo lo va a vender?`,
-        action: null, needs_confirmation: false,
-        pendingContext: { waitingFor: 'price', nombre: correctedName, precio: null, stock, categoria, stock_minimo: 5 }
-      }
-    }
-
-    if (stock == null) {
-      return {
-        response: `${correctedName} a $${price}. ¿Cuántas unidades tiene en existencia?`,
-        action: null, needs_confirmation: false,
-        pendingContext: { waitingFor: 'stock', nombre: correctedName, precio: price, stock: null, categoria, stock_minimo: 5 }
-      }
-    }
-
-    return {
-      response: `Voy a registrar ${correctedName} a $${price}, con ${stock} unidades, categoría ${categoria}. ¿Confirmo?`,
-      action: { type: 'add', data: { nombre: correctedName, precio: price, stock, stock_minimo: 5, categoria } },
-      needs_confirmation: true, pendingContext: null
-    }
+    const pres = extractPresentation(t); const price = extractPrice(t); const stock = extractStock(t)
+    let name = correctProductName(rawName); const cat = detectCategory(name)
+    if (pres && !name.toLowerCase().includes(pres.toLowerCase())) name = `${name} ${pres}`
+    if (!pres && needsPresentation(name)) return { response: `${name}, ¿de qué presentación?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'presentation', baseName: name, nombre: name, precio: price, stock, categoria: cat, stock_minimo: 5 } }
+    if (!price) return { response: `${name}. ¿A cómo lo vende?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'price', nombre: name, precio: null, stock, categoria: cat, stock_minimo: 5 } }
+    if (stock == null) return { response: `${name} a $${price}. ¿Cuántas unidades?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'stock', nombre: name, precio: price, stock: null, categoria: cat, stock_minimo: 5 } }
+    return { response: `Registrar ${name} a $${price}, ${stock} uds, categoría ${cat}. ¿Confirmo?`, action: { type: 'add', data: { nombre: name, precio: price, stock, stock_minimo: 5, categoria: cat } }, needs_confirmation: true, pendingContext: null }
   }
 
-  // ─── DELETE PRODUCT ───
-  if (/(?:elimina|eliminar|borra|borrar|quita|quitar|saca|sacar|da de baja)/i.test(t)) {
-    const nameRaw = t.replace(/(?:elimina|eliminar|borra|borrar|quita|quitar|saca|sacar|da de baja)\s*/i, '').replace(/^(el|la|los|las|un|una|del|de la)\s+/i, '').trim()
-    if (!nameRaw) return { response: '¿Qué producto quiere eliminar?', action: null, needs_confirmation: false }
-    
-    const result = findProduct(products, nameRaw)
-    if (result.products.length === 0) return { response: `No encontré "${nameRaw}" en el inventario.`, action: null, needs_confirmation: false }
-    if (result.products.length === 1) {
-      const p = result.products[0]
-      return { response: `Voy a eliminar "${p.nombre}" del inventario. ¿Confirmo?`, action: { type: 'delete', data: { id: p.id, nombre: p.nombre } }, needs_confirmation: true }
+  // Sell
+  if (/(?:cobra|cobrar|vende|vender|venta de|registra venta)/i.test(t)) {
+    const items = []
+    const parts = t.replace(/(?:cobra|cobrar|vende|vender|registra venta|una venta)\s*/i, '').split(/\s+y\s+|\s*,\s*/)
+    for (const part of parts) {
+      const qm = part.match(/(\d+)\s+/); const qty = qm ? parseInt(qm[1]) : 1
+      const nm = part.replace(/^\d+\s*/, '').replace(/^(de\s+|una?\s+)/i, '').trim()
+      if (!nm) continue
+      const r = findProduct(products, nm)
+      if (r.products.length === 1) items.push({ id: r.products[0].id, nombre: r.products[0].nombre, precio: r.products[0].precio, cantidad: qty })
     }
-    const list = result.products.map((p, i) => `${i + 1}. ${p.nombre}`).join(', ')
-    return { response: `Encontré varios: ${list}. ¿Cuál quiere eliminar?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'which_product', options: result.products, originalAction: 'delete' } }
+    if (items.length === 0) return { response: 'No encontré esos productos. Diga: "Cobra 2 Cocas y unas Sabritas".', action: null, needs_confirmation: false }
+    const total = items.reduce((s, i) => s + i.precio * i.cantidad, 0)
+    const resumen = items.map(i => `${i.cantidad}x ${i.nombre} ($${i.precio})`).join(', ')
+    return { response: `Venta: ${resumen}. Total: $${total.toFixed(2)}. ¿Confirmo?`, action: { type: 'sell', data: { items, total } }, needs_confirmation: true }
   }
 
-  // ─── EDIT PRICE ───
-  if (/(?:cambia|cambiar|actualiza|actualizar|modifica|modificar|pon|poner)\s.*(?:precio)/i.test(t) || /precio.*(?:a|de)\s+\$?\d/i.test(t)) {
-    const newPrice = extractPrice(t)
-    let nameRaw = t.replace(/(?:cambia|cambiar|actualiza|actualizar|modifica|modificar|pon|poner)\s*(el\s+)?precio\s*(de\s*(la|el|los|las)?\s*)?/i, '')
-      .replace(/\s*(?:a|por|en)\s+\$?\s*\d+(?:\.\d{1,2})?\s*(?:pesos|varos)?/gi, '')
-      .replace(/^\s*(de\s*(la|el)?\s*)?/i, '')
-      .trim()
-    
-    if (!nameRaw) return { response: '¿A qué producto le cambio el precio?', action: null, needs_confirmation: false }
-    if (!newPrice) return { response: `¿A cuánto quiere el nuevo precio de ${nameRaw}?`, action: null, needs_confirmation: false }
-    
-    const result = findProduct(products, nameRaw)
-    if (result.products.length === 0) return { response: `No encontré "${nameRaw}" en el inventario.`, action: null, needs_confirmation: false }
-    if (result.products.length === 1) {
-      const p = result.products[0]
-      return { response: `Cambiar precio de "${p.nombre}" de $${p.precio} a $${newPrice}. ¿Confirmo?`, action: { type: 'editPrice', data: { id: p.id, nombre: p.nombre, nuevoPrecio: newPrice } }, needs_confirmation: true }
-    }
-    return { response: `Encontré varios: ${result.products.map(p => p.nombre).join(', ')}. ¿A cuál?`, action: null, needs_confirmation: false }
+  // Delete
+  if (/(?:elimina|eliminar|borra|borrar|quita|quitar)/i.test(t)) {
+    const nm = t.replace(/(?:elimina|eliminar|borra|borrar|quita|quitar)\s*/i, '').replace(/^(el|la|los|las|un|una|del)\s+/i, '').trim()
+    if (!nm) return { response: '¿Qué producto elimino?', action: null, needs_confirmation: false }
+    const r = findProduct(products, nm)
+    if (r.products.length === 0) return { response: `No encontré "${nm}".`, action: null, needs_confirmation: false }
+    if (r.products.length === 1) return { response: `Eliminar "${r.products[0].nombre}". ¿Confirmo?`, action: { type: 'delete', data: { id: r.products[0].id, nombre: r.products[0].nombre } }, needs_confirmation: true }
+    return { response: `Encontré varios: ${r.products.map(p => p.nombre).join(', ')}. ¿Cuál?`, action: null, needs_confirmation: false }
   }
 
-  // ─── ADD STOCK (restock) ───
-  if (/(?:llegaron|llegó|recibí|entrada|surtieron|surtir|sumar|suma)\s+\d+/i.test(t) || /\d+\s+(?:más|mas)\s+de/i.test(t)) {
-    const qtyMatch = t.match(/(\d+)/)
-    const qty = qtyMatch ? parseInt(qtyMatch[1]) : null
-    let nameRaw = t.replace(/(?:llegaron|llegó|recibí|entrada de|surtieron|sumar|suma)\s*/i, '')
-      .replace(/\d+\s*(unidades|piezas|más|mas)?\s*(de\s*(la|el|los|las)?\s*)?/gi, '')
-      .replace(/^(de\s*(la|el)?\s*)/i, '')
-      .trim()
-    
-    if (!qty || !nameRaw) return { response: 'Dígame cuántas unidades y de qué producto. Ejemplo: "Llegaron 24 de Coca-Cola".', action: null, needs_confirmation: false }
-    
-    const result = findProduct(products, nameRaw)
-    if (result.products.length === 0) return { response: `No encontré "${nameRaw}" en el inventario.`, action: null, needs_confirmation: false }
-    if (result.products.length === 1) {
-      const p = result.products[0]
-      return { response: `Sumar ${qty} unidades a "${p.nombre}" (actualmente ${p.stock}). ¿Confirmo?`, action: { type: 'addStock', data: { id: p.id, nombre: p.nombre, cantidad: qty } }, needs_confirmation: true }
-    }
-    return { response: `Encontré varios: ${result.products.map(p => p.nombre).join(', ')}. ¿A cuál le sumo?`, action: null, needs_confirmation: false }
+  // Price query
+  if (/(?:cuánto|cuanto|qué precio|que precio|a cómo|a como|precio de|cuánto cuesta|cuanto cuesta)/i.test(t)) {
+    let nm = t.replace(/(?:cuánto|cuanto|qué precio|que precio|a cómo|a como)\s*(cuesta|vale|está|tiene)?\s*(la|el|los|las|de la|del)?\s*/i, '').replace(/\?/g, '').trim()
+    if (!nm) return { response: '¿De qué producto?', action: null, needs_confirmation: false }
+    const r = findProduct(products, nm)
+    if (r.products.length === 0) return { response: `No encontré "${nm}".`, action: null, needs_confirmation: false }
+    if (r.products.length === 1) return { response: `${r.products[0].nombre}: $${r.products[0].precio}.`, action: null, needs_confirmation: false }
+    return { response: `Encontré: ${r.products.map(p => `${p.nombre} a $${p.precio}`).join(', ')}. ¿Cuál?`, action: null, needs_confirmation: false }
   }
 
-  // ─── EDIT STOCK ───
-  if (/(?:cambia|cambiar|actualiza|actualizar|pon|poner)\s.*(?:stock|existencia|inventario|unidades)/i.test(t)) {
-    const newStock = extractStock(t) || parseInt((t.match(/(\d+)\s*(?:unidades|piezas)?/i) || [])[1])
-    let nameRaw = t.replace(/(?:cambia|cambiar|actualiza|actualizar|pon|poner)\s*(el\s+)?(?:stock|existencia|inventario|unidades)\s*(de\s*(la|el|los|las)?\s*)?/i, '')
-      .replace(/\s*(?:a|en|con)\s+\d+\s*(?:unidades|piezas)?/gi, '')
-      .trim()
-    
-    if (!nameRaw) return { response: '¿A qué producto le cambio el stock?', action: null, needs_confirmation: false }
-    if (!newStock && newStock !== 0) return { response: `¿Cuántas unidades debe tener ${nameRaw}?`, action: null, needs_confirmation: false }
-    
-    const result = findProduct(products, nameRaw)
-    if (result.products.length === 0) return { response: `No encontré "${nameRaw}" en el inventario.`, action: null, needs_confirmation: false }
-    if (result.products.length === 1) {
-      const p = result.products[0]
-      return { response: `Cambiar stock de "${p.nombre}" de ${p.stock} a ${newStock}. ¿Confirmo?`, action: { type: 'editStock', data: { id: p.id, nombre: p.nombre, nuevoStock: newStock } }, needs_confirmation: true }
-    }
-    return { response: `Encontré varios: ${result.products.map(p => p.nombre).join(', ')}. ¿A cuál?`, action: null, needs_confirmation: false }
+  // Stock query
+  if (/(?:cuántos?|cuantos?|qué stock|que stock|stock de|hay de)/i.test(t)) {
+    let nm = t.replace(/(?:cuántos?|cuantos?|qué stock|que stock)\s*(hay|tiene|queda)?\s*(de\s*(la|el)?\s*)?/i, '').replace(/\?/g, '').trim()
+    if (!nm) return { response: '¿De qué producto?', action: null, needs_confirmation: false }
+    const r = findProduct(products, nm)
+    if (r.products.length === 0) return { response: `No encontré "${nm}".`, action: null, needs_confirmation: false }
+    if (r.products.length === 1) { const p = r.products[0]; return { response: `${p.nombre}: ${p.stock} unidades.${p.stock <= (p.stock_minimo||5) ? ' Stock bajo.' : ''}`, action: null, needs_confirmation: false } }
+    return { response: `Encontré: ${r.products.map(p => `${p.nombre} con ${p.stock}`).join(', ')}`, action: null, needs_confirmation: false }
   }
 
-  // ─── PRICE QUERY ───
-  if (/(?:cuánto|cuanto|qué precio|que precio|a cómo|a como|precio de|cuánto cuesta|cuanto cuesta|cuánto vale|cuanto vale)/i.test(t)) {
-    let nameRaw = t.replace(/(?:cuánto|cuanto|qué precio|que precio|a cómo|a como)\s*(cuesta|vale|está|tiene|es)?\s*(la|el|los|las|de la|del|de el)?\s*/i, '')
-      .replace(/^(?:precio\s+de\s*(la|el)?\s*)/i, '')
-      .replace(/\?/g, '')
-      .trim()
-    if (!nameRaw) return { response: '¿De qué producto quiere saber el precio?', action: null, needs_confirmation: false }
-    
-    const result = findProduct(products, nameRaw)
-    if (result.products.length === 0) return { response: `No encontré "${nameRaw}" en el inventario.`, action: null, needs_confirmation: false }
-    if (result.products.length === 1) {
-      const p = result.products[0]
-      return { response: `${p.nombre} tiene un precio de $${p.precio}.`, action: null, needs_confirmation: false }
-    }
-    const list = result.products.map((p, i) => `${i + 1}. ${p.nombre} a $${p.precio}`).join(', ')
-    return { response: `Encontré varios: ${list}. ¿De cuál?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'which_product', options: result.products, originalAction: 'price_query' } }
-  }
+  if (/(?:alertas?|stock bajo|falta|faltan|reponer)/i.test(t)) return { response: '', action: { type: 'alerts' }, needs_confirmation: false }
+  if (/(?:inventario|lista|listar|todos los productos|muéstrame|muestrame|ver productos|qué tengo|que tengo)/i.test(t)) return { response: '', action: { type: 'list' }, needs_confirmation: false }
 
-  // ─── STOCK QUERY ───
-  if (/(?:cuántos?|cuantos?|qué stock|que stock|stock de|existencia|hay de|cuántos? (?:hay|tiene|queda))/i.test(t)) {
-    let nameRaw = t.replace(/(?:cuántos?|cuantos?|qué stock|que stock)\s*(hay|tiene|queda|quedan)?\s*(de\s*(la|el|los|las)?\s*)?/i, '')
-      .replace(/^(?:stock|existencia)\s*(de\s*(la|el)?\s*)?/i, '')
-      .replace(/^(?:hay\s+de\s*(la|el)?\s*)/i, '')
-      .replace(/\?/g, '')
-      .trim()
-    if (!nameRaw) return { response: '¿De qué producto quiere saber el stock?', action: null, needs_confirmation: false }
-    
-    const result = findProduct(products, nameRaw)
-    if (result.products.length === 0) return { response: `No encontré "${nameRaw}" en el inventario.`, action: null, needs_confirmation: false }
-    if (result.products.length === 1) {
-      const p = result.products[0]
-      const status = p.stock <= p.stock_minimo ? ' Atención, stock bajo.' : ''
-      return { response: `${p.nombre} tiene ${p.stock} unidades en stock.${status}`, action: null, needs_confirmation: false }
-    }
-    const list = result.products.map((p, i) => `${i + 1}. ${p.nombre} con ${p.stock}`).join(', ')
-    return { response: `Encontré varios: ${list}. ¿De cuál?`, action: null, needs_confirmation: false, pendingContext: { waitingFor: 'which_product', options: result.products, originalAction: 'stock_query' } }
-  }
-
-  // ─── ALERTS ───
-  if (/(?:alertas?|stock bajo|productos? bajo|falta|faltan|que falta|reponer|reorden|mínimo)/i.test(t)) {
-    return { response: '', action: { type: 'alerts' }, needs_confirmation: false }
-  }
-
-  // ─── LIST ───
-  if (/(?:inventario|lista|listar|todos los productos|muéstrame|muestrame|ver productos|qué tengo|que tengo|qué hay|que hay)/i.test(t)) {
-    return { response: '', action: { type: 'list' }, needs_confirmation: false }
-  }
-
-  // ─── FALLBACK ───
-  return {
-    response: 'Disculpe, no entendí. Puede decir: "Agrega una Coca de 600 ml a 18 pesos con 24 en stock", "Cuánto cuesta la leche", "Stock bajo", o diga "Ayuda".',
-    action: null, needs_confirmation: false
-  }
+  return { response: 'No entendí. Diga "Ayuda" para ver opciones.', action: null, needs_confirmation: false }
 }
 
 
@@ -565,9 +386,7 @@ function speak(text, onEnd) {
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel()
     const utter = new SpeechSynthesisUtterance(text)
-    utter.lang = 'es-MX'
-    utter.rate = 1.05
-    utter.pitch = 1
+    utter.lang = 'es-MX'; utter.rate = 1.05; utter.pitch = 1
     const voices = window.speechSynthesis.getVoices()
     const mxVoice = voices.find(v => v.lang === 'es-MX') || voices.find(v => v.lang.startsWith('es'))
     if (mxVoice) utter.voice = mxVoice
@@ -578,7 +397,7 @@ function speak(text, onEnd) {
 
 function checkWakeWord(transcript) {
   const t = transcript.toLowerCase()
-  return t.includes('hey sketch') || t.includes('oye sketch') || t.includes('sketch') || t.includes('ella sketch') || t.includes('el sketch')
+  return t.includes('hey sketch') || t.includes('oye sketch') || t.includes('sketch')
 }
 
 
@@ -588,6 +407,7 @@ function checkWakeWord(transcript) {
 export default function SketchVoiceAssistant() {
   const [products, setProducts] = useState([])
   const [messages, setMessages] = useState([])
+  const [chatHistory, setChatHistory] = useState([]) // Claude conversation history
   const [isListening, setIsListening] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
@@ -598,6 +418,7 @@ export default function SketchVoiceAssistant() {
   const [pendingContext, setPendingContext] = useState(null)
   const [lowStockProducts, setLowStockProducts] = useState([])
   const [hasGreeted, setHasGreeted] = useState(false)
+  const [aiMode, setAiMode] = useState(USE_CLAUDE ? 'claude' : 'local') // Track which mode is active
   const recognitionRef = useRef(null)
   const wakeRecognitionRef = useRef(null)
   const messagesEndRef = useRef(null)
@@ -607,13 +428,8 @@ export default function SketchVoiceAssistant() {
     if (isOpen && !hasGreeted) {
       const greeting = getGreeting()
       const hour = new Date().getHours()
-      let timeContext = ''
-      if (hour >= 5 && hour < 9) timeContext = ' ¿Listo para abrir la tienda?'
-      else if (hour >= 9 && hour < 14) timeContext = ' ¿En qué le ayudo hoy?'
-      else if (hour >= 14 && hour < 19) timeContext = ' ¿Cómo va el día en la tienda?'
-      else timeContext = ' ¿Hacemos el corte o en qué le ayudo?'
-
-      const welcomeText = `¡${greeting}! Soy Sketch, su asistente de inventario.${timeContext} Toque el micrófono o diga "Hey Sketch".`
+      let ctx = hour < 9 ? ' ¿Listo para abrir la tienda?' : hour < 14 ? ' ¿En qué le ayudo hoy?' : hour < 19 ? ' ¿Cómo va el día?' : ' ¿Hacemos el corte?'
+      const welcomeText = `¡${greeting}! Soy Sketch, su asistente de inventario.${ctx} Toque el micrófono o diga "Hey Sketch".`
       setMessages([{ role: 'assistant', text: welcomeText, time: new Date() }])
       setHasGreeted(true)
       setIsSpeaking(true)
@@ -621,7 +437,6 @@ export default function SketchVoiceAssistant() {
     }
   }, [isOpen, hasGreeted])
 
-  // ─── Load products ───
   useEffect(() => {
     async function load() {
       try {
@@ -636,76 +451,48 @@ export default function SketchVoiceAssistant() {
   }, [])
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
+  useEffect(() => { if ('speechSynthesis' in window) { window.speechSynthesis.getVoices(); window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices() } }, [])
 
-  useEffect(() => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.getVoices()
-      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices()
-    }
-  }, [])
-
-  const addMessage = useCallback((role, text) => {
-    setMessages(prev => [...prev, { role, text, time: new Date() }])
-  }, [])
+  const addMessage = useCallback((role, text) => { setMessages(prev => [...prev, { role, text, time: new Date() }]) }, [])
 
   const reloadProducts = useCallback(async () => {
-    try {
-      const data = await getProductos()
-      setProducts(data)
-      setLowStockProducts(data.filter(p => p.stock <= p.stock_minimo))
-      return data
-    } catch (err) { console.error(err); return products }
+    try { const data = await getProductos(); setProducts(data); setLowStockProducts(data.filter(p => p.stock <= p.stock_minimo)); return data }
+    catch (err) { console.error(err); return products }
   }, [products])
 
   const respond = useCallback((text) => {
-    setIsProcessing(false)
-    addMessage('assistant', text)
-    setIsSpeaking(true)
-    speak(text, () => setIsSpeaking(false))
+    setIsProcessing(false); addMessage('assistant', text); setIsSpeaking(true); speak(text, () => setIsSpeaking(false))
   }, [addMessage])
 
-  // ─── Execute a confirmed action ───
+  // ─── Execute action ───
   const executeAction = useCallback(async (action) => {
     try {
       const { type, data } = action
       switch (type) {
         case 'add': {
-          const nuevo = await agregarProducto({
-            nombre: data.nombre, precio: data.precio || 0, stock: data.stock || 0,
-            stock_minimo: data.stock_minimo || 5, categoria: data.categoria || 'General'
+          const n = await agregarProducto({ nombre: data.nombre, precio: data.precio || 0, stock: data.stock || 0, stock_minimo: data.stock_minimo || 5, categoria: data.categoria || 'General' })
+          await reloadProducts()
+          return `Registré "${n.nombre}" a $${n.precio}, ${n.stock} uds. Categoría: ${n.categoria}. ¿Algo más?`
+        }
+        case 'delete': { await eliminarProducto(data.id); await reloadProducts(); return `"${data.nombre}" eliminado. ¿Algo más?` }
+        case 'editPrice': { await actualizarPrecio(data.id, data.nuevoPrecio); await reloadProducts(); return `Precio de "${data.nombre}" actualizado a $${data.nuevoPrecio}. ¿Algo más?` }
+        case 'editStock': { await actualizarStock(data.id, data.nuevoStock); await reloadProducts(); return `Stock de "${data.nombre}": ${data.nuevoStock} uds. ¿Algo más?` }
+        case 'addStock': { const u = await sumarStock(data.id, data.cantidad); await reloadProducts(); return `+${data.cantidad} a "${data.nombre}". Total: ${u.stock}. ¿Algo más?` }
+        case 'sell': {
+          const { registrarVenta } = await import('../services/ventasService')
+          await registrarVenta({
+            items: data.items.map(i => ({ producto_id: i.id, nombre: i.nombre, precio: i.precio, cantidad: i.cantidad })),
+            total: data.total, pago: data.total, cambio: 0
           })
           await reloadProducts()
-          return `Listo, registré "${nuevo.nombre}" a $${nuevo.precio}, con ${nuevo.stock} unidades. Categoría: ${nuevo.categoria}. ¿Algo más?`
+          return `Venta registrada por $${data.total.toFixed(2)}. ¿Algo más?`
         }
-        case 'delete': {
-          await eliminarProducto(data.id)
-          await reloadProducts()
-          return `"${data.nombre}" eliminado del inventario. ¿Algo más?`
-        }
-        case 'editPrice': {
-          await actualizarPrecio(data.id, data.nuevoPrecio)
-          await reloadProducts()
-          return `Precio de "${data.nombre}" actualizado a $${data.nuevoPrecio}. ¿Algo más?`
-        }
-        case 'editStock': {
-          await actualizarStock(data.id, data.nuevoStock)
-          await reloadProducts()
-          return `Stock de "${data.nombre}" actualizado a ${data.nuevoStock} unidades. ¿Algo más?`
-        }
-        case 'addStock': {
-          const updated = await sumarStock(data.id, data.cantidad)
-          await reloadProducts()
-          return `Se sumaron ${data.cantidad} a "${data.nombre}". Ahora tiene ${updated.stock} en total. ¿Algo más?`
-        }
-        default: return 'Acción completada. ¿Algo más?'
+        default: return 'Listo. ¿Algo más?'
       }
-    } catch (err) {
-      console.error('Error ejecutando acción:', err)
-      return 'Hubo un error al ejecutar la operación. Intente de nuevo.'
-    }
+    } catch (err) { console.error(err); return 'Error al ejecutar. Intente de nuevo.' }
   }, [reloadProducts])
 
-  // ─── Process voice command (LOCAL — sin API) ───
+  // ─── Process command — HYBRID: Claude API + Local fallback ───
   const processCommand = useCallback(
     async (transcript) => {
       addMessage('user', transcript)
@@ -713,235 +500,157 @@ export default function SketchVoiceAssistant() {
 
       const t = transcript.toLowerCase().replace(/[.!?]+$/, '').trim()
 
-      // ─── Handle confirmation of pending action ───
+      // Handle confirmation
       if (pendingAction) {
-        const isYes = /^(sí|si|dale|ok|okey|claro|confirmo|afirmativo|está bien|adelante|por favor|ándale|ándele|va|sale|perfecto|de acuerdo|órale|arre|hazlo|jalo)$/i.test(t) ||
-                      t.includes('sí') || t.includes('confirmo') || t.includes('dale') || t.includes('adelante')
-        const isNo = /^(no|cancela|cancelar|mejor no|déjalo|dejalo|olvídalo|olvidalo|nel|nada|descarta|ya no|no gracias)$/i.test(t) ||
-                     t.includes('cancela') || t.includes('no lo') || t.includes('mejor no')
+        const isYes = /^(sí|si|dale|ok|okey|claro|confirmo|afirmativo|adelante|va|sale|perfecto|órale|arre|hazlo|jalo)$/i.test(t) ||
+                      t.includes('sí') || t.includes('confirmo') || t.includes('dale')
+        const isNo = /^(no|cancela|cancelar|mejor no|déjalo|nel|nada|descarta)$/i.test(t) ||
+                     t.includes('cancela') || t.includes('mejor no')
+        if (isYes) { const r = await executeAction(pendingAction); setPendingAction(null); setPendingContext(null); respond(r); return }
+        if (isNo) { setPendingAction(null); setPendingContext(null); respond('Cancelado. ¿En qué más le ayudo?'); return }
+      }
 
-        if (isYes) {
-          const result = await executeAction(pendingAction)
-          setPendingAction(null)
-          setPendingContext(null)
-          respond(result)
-          return
-        } else if (isNo) {
-          setPendingAction(null)
-          setPendingContext(null)
-          respond('Operación cancelada. ¿En qué más le ayudo?')
-          return
+      let result = null
+
+      // ─── TRY CLAUDE API FIRST ───
+      if (USE_CLAUDE) {
+        const newHistory = [...chatHistory, { role: 'user', content: transcript }].slice(-20)
+        const claudeResult = await askClaude(newHistory, products)
+
+        if (claudeResult) {
+          // Claude responded successfully
+          setAiMode('claude')
+          setChatHistory([...newHistory, { role: 'assistant', content: JSON.stringify(claudeResult) }])
+          result = claudeResult
         }
       }
 
-      // ─── Process with LOCAL NLP (no API!) ───
-      const result = processLocalNLP(transcript, products, pendingContext)
-
-      if (result.pendingContext !== undefined) {
-        setPendingContext(result.pendingContext)
+      // ─── FALLBACK TO LOCAL NLP ───
+      if (!result) {
+        setAiMode('local')
+        result = processLocalNLP(transcript, products, pendingContext)
+        if (result.pendingContext !== undefined) setPendingContext(result.pendingContext)
       }
 
-      if (result.action && result.needs_confirmation) {
+      // ─── Handle result ───
+      if (result.action && result.action.type === 'dismiss') {
+        // Farewell — respond and close panel after speaking
+        setIsProcessing(false)
+        addMessage('assistant', result.response)
+        setIsSpeaking(true)
+        speak(result.response, () => {
+          setIsSpeaking(false)
+          // Close panel after goodbye
+          setTimeout(() => setIsOpen(false), 800)
+        })
+      } else if (result.action && result.needs_confirmation) {
         setPendingAction(result.action)
         respond(result.response)
       } else if (result.action && !result.needs_confirmation) {
         if (result.action.type === 'alerts') {
-          const low = products.filter(p => p.stock <= p.stock_minimo)
-          if (low.length === 0) respond('No hay productos con stock bajo. Todo en orden.')
-          else respond(`Hay ${low.length} producto${low.length > 1 ? 's' : ''} con stock bajo: ${low.map(p => `${p.nombre} con ${p.stock}`).join(', ')}.`)
+          const low = products.filter(p => p.stock <= (p.stock_minimo || 5))
+          respond(low.length === 0 ? 'Sin stock bajo. Todo en orden.' : `${low.length} con stock bajo: ${low.map(p => `${p.nombre} (${p.stock})`).join(', ')}.`)
         } else if (result.action.type === 'list') {
-          if (products.length === 0) respond('El inventario está vacío. ¿Desea agregar un producto?')
-          else {
-            const list = products.slice(0, 10).map(p => `${p.nombre}, ${p.stock} unidades a $${p.precio}`).join('; ')
-            respond(`Tiene ${products.length} productos: ${list}${products.length > 10 ? `, y ${products.length - 10} más.` : '.'}`)
-          }
-        } else {
-          respond(result.response)
-        }
-      } else {
-        respond(result.response)
-      }
+          if (products.length === 0) respond('Inventario vacío. ¿Agregar algo?')
+          else { const l = products.slice(0, 10).map(p => `${p.nombre}: ${p.stock} uds a $${p.precio}`).join('; '); respond(`${products.length} productos: ${l}${products.length > 10 ? '...' : '.'}`) }
+        } else { respond(result.response) }
+      } else { respond(result.response) }
     },
-    [products, addMessage, pendingAction, pendingContext, executeAction, respond]
+    [products, addMessage, chatHistory, pendingAction, pendingContext, executeAction, respond]
   )
 
-  // ─── Stop wake listener ───
   const stopWakeListener = useCallback(() => {
-    if (wakeRecognitionRef.current) {
-      try { wakeRecognitionRef.current.abort() } catch (e) {}
-      wakeRecognitionRef.current = null
-    }
+    if (wakeRecognitionRef.current) { try { wakeRecognitionRef.current.abort() } catch (e) {} wakeRecognitionRef.current = null }
     setWakeListening(false)
   }, [])
 
-  // ─── Start command listening ───
   const startListening = useCallback(() => {
-    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      addMessage('assistant', 'Su navegador no soporta reconocimiento de voz. Use Chrome o Edge.')
-      return
-    }
+    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) { addMessage('assistant', 'Navegador sin soporte de voz. Use Chrome.'); return }
     stopWakeListener()
     setTimeout(() => {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      const recognition = new SpeechRecognition()
-      recognition.lang = 'es-MX'
-      recognition.interimResults = true
-      recognition.continuous = false
-      recognition.onstart = () => { setIsListening(true); setLiveTranscript('') }
-      recognition.onresult = (event) => {
-        let interim = '', final = ''
-        for (let i = 0; i < event.results.length; i++) {
-          if (event.results[i].isFinal) final += event.results[i][0].transcript
-          else interim += event.results[i][0].transcript
-        }
-        setLiveTranscript(final || interim)
-        if (final) processCommand(final)
-      }
-      recognition.onerror = (event) => {
-        setIsListening(false); setLiveTranscript('')
-        if (event.error !== 'no-speech' && event.error !== 'aborted') addMessage('assistant', 'No pude escucharlo bien. ¿Podría repetirlo?')
-      }
-      recognition.onend = () => { setIsListening(false); setLiveTranscript('') }
-      recognitionRef.current = recognition
-      recognition.start()
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+      const r = new SR(); r.lang = 'es-MX'; r.interimResults = true; r.continuous = false
+      r.onstart = () => { setIsListening(true); setLiveTranscript('') }
+      r.onresult = (e) => { let interim = '', final = ''; for (let i = 0; i < e.results.length; i++) { if (e.results[i].isFinal) final += e.results[i][0].transcript; else interim += e.results[i][0].transcript }; setLiveTranscript(final || interim); if (final) processCommand(final) }
+      r.onerror = (e) => { setIsListening(false); setLiveTranscript(''); if (e.error !== 'no-speech' && e.error !== 'aborted') addMessage('assistant', 'No escuché. ¿Podría repetir?') }
+      r.onend = () => { setIsListening(false); setLiveTranscript('') }
+      recognitionRef.current = r; r.start()
     }, 350)
   }, [addMessage, processCommand, stopWakeListener])
 
-  // ─── Wake word listener ───
   useEffect(() => {
     if (!isOpen) return
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) return
-    let active = true, restartTimer = null
-    const startWakeListener = () => {
-      if (!active || isListening || isSpeaking || isProcessing) return
-      if (recognitionRef.current) return
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      const recognition = new SpeechRecognition()
-      recognition.lang = 'es-MX'; recognition.interimResults = false; recognition.continuous = true
-      recognition.onresult = (event) => {
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal && checkWakeWord(event.results[i][0].transcript)) {
-            recognition.abort(); wakeRecognitionRef.current = null; setWakeListening(false)
-            setTimeout(() => { if (active) startListening() }, 500)
-          }
-        }
-      }
-      recognition.onend = () => { setWakeListening(false); if (active && !isListening && !isSpeaking && !isProcessing) restartTimer = setTimeout(() => startWakeListener(), 1000) }
-      recognition.onerror = () => { setWakeListening(false); wakeRecognitionRef.current = null; if (active) restartTimer = setTimeout(() => startWakeListener(), 1500) }
-      wakeRecognitionRef.current = recognition
-      try { recognition.start(); setWakeListening(true) } catch (e) {}
+    let active = true, rt = null
+    const startWake = () => {
+      if (!active || isListening || isSpeaking || isProcessing || recognitionRef.current) return
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+      const r = new SR(); r.lang = 'es-MX'; r.interimResults = false; r.continuous = true
+      r.onresult = (e) => { for (let i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal && checkWakeWord(e.results[i][0].transcript)) { r.abort(); wakeRecognitionRef.current = null; setWakeListening(false); setTimeout(() => { if (active) startListening() }, 500) } } }
+      r.onend = () => { setWakeListening(false); if (active && !isListening && !isSpeaking && !isProcessing) rt = setTimeout(startWake, 1000) }
+      r.onerror = () => { setWakeListening(false); wakeRecognitionRef.current = null; if (active) rt = setTimeout(startWake, 1500) }
+      wakeRecognitionRef.current = r; try { r.start(); setWakeListening(true) } catch (e) {}
     }
-    const timer = setTimeout(startWakeListener, 1500)
-    return () => {
-      active = false; clearTimeout(timer)
-      if (restartTimer) clearTimeout(restartTimer)
-      try { wakeRecognitionRef.current?.abort() } catch (e) {}
-      wakeRecognitionRef.current = null
-    }
+    const t = setTimeout(startWake, 1500)
+    return () => { active = false; clearTimeout(t); if (rt) clearTimeout(rt); try { wakeRecognitionRef.current?.abort() } catch (e) {}; wakeRecognitionRef.current = null }
   }, [isOpen, isListening, isSpeaking, isProcessing, startListening])
 
-  // ─── Quick actions ───
   const quickActions = [
-    { label: '📦 Agregar producto', command: 'Agrega un producto' },
-    { label: '📋 Ver inventario', command: 'Muéstrame el inventario' },
-    { label: '⚠️ Stock bajo', command: '¿Hay alertas de stock bajo?' },
-    { label: '❓ Ayuda', command: 'Ayuda' },
+    { label: '📦 Agregar', command: 'Agrega un producto' },
+    { label: '🛒 Vender', command: 'Quiero registrar una venta' },
+    { label: '📋 Inventario', command: 'Muéstrame el inventario' },
+    { label: '⚠️ Alertas', command: '¿Hay stock bajo?' },
   ]
 
   const formatTime = (d) => d.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })
-
-  const hintText = isListening ? 'Escuchando...'
-    : isSpeaking ? 'Respondiendo...'
-    : isProcessing ? 'Procesando...'
-    : pendingAction ? 'Diga "sí" para confirmar o "no" para cancelar'
-    : pendingContext ? `Esperando: ${pendingContext.waitingFor === 'presentation' ? 'presentación' : pendingContext.waitingFor === 'price' ? 'precio' : 'stock'}`
-    : 'Toque para hablar'
+  const hintText = isListening ? 'Escuchando...' : isSpeaking ? 'Respondiendo...' : isProcessing ? 'Pensando...' : pendingAction ? '"Sí" o "No"' : pendingContext ? 'Completando datos...' : 'Toque para hablar'
 
   return (
     <>
-      <button
-        className={`sketch-fab${lowStockProducts.length > 0 ? ' has-alerts' : ''}`}
-        data-alerts={lowStockProducts.length}
-        onClick={() => setIsOpen(!isOpen)}
-        title="Sketch Voice Assistant"
-      >
-        {isOpen ? (
-          <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
-        ) : (
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" />
-          </svg>
-        )}
+      <button className={`sketch-fab${lowStockProducts.length > 0 ? ' has-alerts' : ''}`} data-alerts={lowStockProducts.length} onClick={() => setIsOpen(!isOpen)} title="Sketch">
+        {isOpen ? <svg width="24" height="24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+        : <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" /></svg>}
       </button>
 
       <div className={`sketch-panel${isOpen ? ' open' : ''}`}>
         <div className="sketch-header">
-          <div className="sketch-logo">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0a0f1c" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" />
-            </svg>
-          </div>
+          <div className="sketch-logo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0a0f1c" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" /></svg></div>
           <div className="sketch-header-info">
-            <h3>SKETCH</h3>
+            <h3>SKETCH <span style={{ fontSize: 10, color: aiMode === 'claude' ? '#34D8E8' : '#8A9BBF', fontWeight: 400 }}>{aiMode === 'claude' ? '● Claude AI' : '● Local'}</span></h3>
             <div className="sketch-header-status">
-              {isListening ? '🔴 Escuchando...' : isSpeaking ? '🔊 Hablando...' : isProcessing ? '⏳ Procesando...' : wakeListening ? '🎤 "Hey Sketch" activo' : pendingAction ? '⏳ Confirmación' : pendingContext ? '📝 Completando datos...' : '✅ Listo'}
+              {isListening ? '🔴 Escuchando...' : isSpeaking ? '🔊 Hablando...' : isProcessing ? '🧠 Pensando...' : wakeListening ? '🎤 "Hey Sketch"' : pendingAction ? '⏳ Confirmación' : '✅ Listo'}
             </div>
           </div>
-          <button className="sketch-close" onClick={() => setIsOpen(false)}>
-            <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 4L4 14M4 4l10 10" /></svg>
-          </button>
+          <button className="sketch-close" onClick={() => setIsOpen(false)}><svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 4L4 14M4 4l10 10" /></svg></button>
         </div>
 
         {lowStockProducts.length > 0 && (
-          <div className="sketch-alerts-bar" onClick={() => {
-            const text = `${lowStockProducts.length} producto${lowStockProducts.length > 1 ? 's' : ''} con stock bajo: ${lowStockProducts.map(p => `${p.nombre} (${p.stock})`).join(', ')}`
-            addMessage('assistant', text)
-            setIsSpeaking(true)
-            speak(`Atención. ${text}`, () => setIsSpeaking(false))
-          }}>
+          <div className="sketch-alerts-bar" onClick={() => { const t = `${lowStockProducts.length} con stock bajo: ${lowStockProducts.map(p => `${p.nombre} (${p.stock})`).join(', ')}`; addMessage('assistant', t); setIsSpeaking(true); speak(`Atención. ${t}`, () => setIsSpeaking(false)) }}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 4l7.53 13H4.47L12 6zm-1 5v4h2v-4h-2zm0 6v2h2v-2h-2z" /></svg>
-            <span>{lowStockProducts.length} producto{lowStockProducts.length > 1 ? 's' : ''} con stock bajo</span>
+            <span>{lowStockProducts.length} con stock bajo</span>
           </div>
         )}
 
         <div className="sketch-messages">
           {messages.map((msg, i) => (
             <div key={i} className={`sketch-msg ${msg.role}`}>
-              {msg.role === 'assistant' && pendingAction && i === messages.length - 1 && (
-                <div className="sketch-pending-badge">⏳ Esperando confirmación</div>
-              )}
+              {msg.role === 'assistant' && pendingAction && i === messages.length - 1 && <div className="sketch-pending-badge">⏳ Confirmar</div>}
               {msg.text}
               <div className="sketch-msg-time">{formatTime(msg.time)}</div>
             </div>
           ))}
-          {isProcessing && (
-            <div className="sketch-msg assistant" style={{ opacity: 0.6 }}>
-              <div className="sketch-thinking-dots"><span></span><span></span><span></span></div>
-              Procesando...
-            </div>
-          )}
+          {isProcessing && <div className="sketch-msg assistant" style={{ opacity: 0.6 }}><div className="sketch-thinking-dots"><span></span><span></span><span></span></div>Pensando...</div>}
           <div ref={messagesEndRef} />
         </div>
 
-        {isListening && liveTranscript && (
-          <div className="sketch-live">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /></svg>
-            {liveTranscript}
-          </div>
-        )}
+        {isListening && liveTranscript && <div className="sketch-live"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /></svg>{liveTranscript}</div>}
 
-        {/* Quick action chips */}
         {!pendingAction && !pendingContext && !isListening && !isProcessing && !isSpeaking && messages.length <= 2 && (
           <div className="sketch-quick-actions">
-            {quickActions.map((action, i) => (
-              <button key={i} className="sketch-quick-chip" onClick={() => { if (!isProcessing && !isSpeaking) processCommand(action.command) }}>
-                {action.label}
-              </button>
-            ))}
+            {quickActions.map((a, i) => <button key={i} className="sketch-quick-chip" onClick={() => { if (!isProcessing && !isSpeaking) processCommand(a.command) }}>{a.label}</button>)}
           </div>
         )}
 
-        {/* Confirmation buttons */}
         {pendingAction && !isProcessing && !isSpeaking && !isListening && (
           <div className="sketch-confirm-bar">
             <button className="sketch-confirm-btn yes" onClick={() => processCommand('Sí, confirmo')}>✓ Confirmar</button>
@@ -951,19 +660,11 @@ export default function SketchVoiceAssistant() {
 
         <div className="sketch-controls">
           <div className="sketch-controls-inner">
-            <button
-              className={`sketch-mic-btn${isListening ? ' listening' : ''}${pendingAction ? ' pending' : ''}`}
-              onClick={startListening}
-              disabled={isListening || isSpeaking || isProcessing}
-            >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" />
-              </svg>
+            <button className={`sketch-mic-btn${isListening ? ' listening' : ''}${pendingAction ? ' pending' : ''}`} onClick={startListening} disabled={isListening || isSpeaking || isProcessing}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="22" /></svg>
             </button>
             <span className="sketch-hint">{hintText}</span>
-            {wakeListening && !isListening && !isSpeaking && !isProcessing && (
-              <span className="sketch-wake-badge">🎤 "Hey Sketch"</span>
-            )}
+            {wakeListening && !isListening && !isSpeaking && !isProcessing && <span className="sketch-wake-badge">🎤 "Hey Sketch"</span>}
           </div>
         </div>
       </div>
