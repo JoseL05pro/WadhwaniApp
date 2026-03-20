@@ -20,6 +20,24 @@ const styles = `
     --gray:   #8A9BBF;
     --light:  #C8D8F0;
   }
+[data-theme="light"] {
+  --navy:   #F5F7FA;
+  --panel:  #FFFFFF;
+  --card:   #FFFFFF;
+  --card2:  #F0F2F5;
+  --border: rgba(0,0,0,0.08);
+  --white:  #1A1A2E;
+  --gray:   #6B7280;
+  --light:  #374151;
+}
+
+[data-theme="light"] .search-input,
+[data-theme="light"] .filter-select,
+[data-theme="light"] .field input,
+[data-theme="light"] .field select { color: #1A1A2E; }
+[data-theme="light"] .search-input::placeholder,
+[data-theme="light"] .field input::placeholder { color: rgba(107,114,128,0.6); }
+
 
   html, body, #root { height: 100%; font-family: 'DM Sans', sans-serif; background: var(--navy); color: var(--white); }
 

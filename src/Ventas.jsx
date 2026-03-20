@@ -14,6 +14,12 @@ const ventasStyles = `
     flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0;
   }
 
+[data-theme="light"] .pos-search-input,
+[data-theme="light"] .pos-pay-input-wrap input { color: #1A1A2E; }
+[data-theme="light"] .pos-search-input::placeholder { color: rgba(107,114,128,0.6); }
+[data-theme="light"] .ticket { background: #fff; }
+
+
   .ventas-topbar {
     display: flex; align-items: center; justify-content: space-between;
     padding: 16px 28px;

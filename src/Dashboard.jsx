@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "./supabaseClient";
 import Ventas from "./Ventas";
-
+import Alertas from "./Alertas";
+import Reportes from "./Reportes";
+import Ganancias from "./Ganancias";
 
 const styles = `
   @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap');
@@ -42,6 +44,39 @@ const styles = `
     transition: transform 0.3s cubic-bezier(0.22,1,0.36,1);
     z-index: 50;
   }
+
+[data-theme="light"] {
+    --navy:   #F5F7FA;
+    --panel:  #FFFFFF;
+    --card:   #FFFFFF;
+    --card2:  #F0F2F5;
+    --border: rgba(0,0,0,0.08);
+    --blue:   #1A73E8;
+    --sky:    #1A73E8;
+    --cyan:   #0891B2;
+    --green:  #16A34A;
+    --orange: #EA580C;
+    --red:    #DC2626;
+    --white:  #1A1A2E;
+    --gray:   #6B7280;
+    --light:  #374151;
+  }
+
+  [data-theme="light"] .brand-icon { color: #fff; }
+  [data-theme="light"] .search-input { color: #1A1A2E; }
+  [data-theme="light"] .search-input::placeholder { color: rgba(107,114,128,0.6); }
+  [data-theme="light"] .modal-input, [data-theme="light"] .modal-select { color: #1A1A2E; }
+  [data-theme="light"] .modal-input::placeholder { color: rgba(107,114,128,0.5); }
+
+  .theme-toggle {
+    width: 36px; height: 36px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 16px; transition: all 0.3s;
+    flex-shrink: 0;
+  }
+  .theme-toggle:hover { background: rgba(255,255,255,0.08); transform: rotate(20deg); }
+
 
   @keyframes slideInLeft {
     from { opacity: 0; transform: translateX(-20px); }
@@ -771,8 +806,8 @@ const NAV_ITEMS = [
   { icon: "💰", label: "Ventas", key: "ventas" },
   { icon: "🔔", label: "Alertas", key: "alertas" },
   { icon: "📈", label: "Reportes", key: "reportes" },
+  { icon: "💹", label: "Ganancias", key: "ganancias" },
 ];
-
 // ── Fallback static data (used when Supabase tables don't exist yet) ──
 const FALLBACK_PRODUCTS = [
   { id: 1, nombre: "Coca-Cola 600ml", categoria: "Bebidas", stock: 3, stock_max: 50, precio: 18 },
@@ -813,6 +848,7 @@ export default function Dashboard({ onNavigate, user }) {
   const [search, setSearch] = useState("");
   const [currentPage, setCurrentPage] = useState("dashboard");
   const [showBot, setShowBot] = useState(false);
+  const [theme, setTheme] = useState(localStorage.getItem('sketch-theme') || 'dark');
 
   // ── User info ──
   const userName = user?.user_metadata?.nombre || user?.email?.split("@")[0] || "Usuario";
@@ -836,6 +872,12 @@ export default function Dashboard({ onNavigate, user }) {
   }, []);
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
+  useEffect(() => { fetchProducts(); }, [fetchProducts]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('sketch-theme', theme);
+  }, [theme]);
 
   // ── Computed KPIs ──
   const totalProducts = products.length;
@@ -878,7 +920,7 @@ export default function Dashboard({ onNavigate, user }) {
   const handleNav = (key) => {
     setCurrentPage(key);
     setSidebarOpen(false);
-    if (key !== "dashboard" && key !== "ventas") onNavigate(key);
+    if (key !== "dashboard" && key !== "ventas" && key !== "alertas" && key !== "reportes" && key !== "ganancias") onNavigate(key);
   };
 
   // ── Logout ──
@@ -934,6 +976,25 @@ export default function Dashboard({ onNavigate, user }) {
             <Ventas onNavigate={onNavigate} user={user} />
           )}
 
+
+{/* ═══ GANANCIAS PAGE ═══ */}
+{currentPage === "ganancias" && (
+            <Ganancias onNavigate={onNavigate} user={user} />
+          )}
+
+
+
+ {/* ═══ REPORTES PAGE ═══ */}
+ {currentPage === "reportes" && (
+            <Reportes onNavigate={onNavigate} user={user} />
+          )}
+
+
+          {/* ═══ ALERTAS PAGE ═══ */}
+          {currentPage === "alertas" && (
+            <Alertas onNavigate={onNavigate} user={user} />
+          )}
+
           {/* ═══ DASHBOARD PAGE ═══ */}
           {currentPage === "dashboard" && (
           <>
@@ -955,6 +1016,9 @@ export default function Dashboard({ onNavigate, user }) {
                   onChange={e => setSearch(e.target.value)}
                 />
               </div>
+              <button className="theme-toggle" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Cambiar tema">
+  {theme === 'dark' ? '☀️' : '🌙'}
+</button>
               <div className="notif-btn">
                 🔔
                 {(outOfStock + lowStock) > 0 && <div className="notif-dot" />}
